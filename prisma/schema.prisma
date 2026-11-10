@@ -1,0 +1,42 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("POSTGRES_PRISMA_URL")
+  directUrl = env("POSTGRES_URL_NON_POOLING")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String      @id @default(cuid())
+  nickname     String      @unique
+  passwordHash String
+  teamId       String?
+  team         Team?       @relation(fields: [teamId], references: [id])
+  ownedTeams   Team[]      @relation("TeamOwner")
+  visits       BarVisit[]
+  createdAt    DateTime    @default(now())
+}
+
+model Team {
+  id        String     @id @default(cuid())
+  name      String
+  code      String     @unique
+  region    String
+  ownerId   String
+  owner     User       @relation("TeamOwner", fields: [ownerId], references: [id])
+  members   User[]
+  createdAt DateTime   @default(now())
+}
+
+model BarVisit {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  osmId     String
+  barName   String
+  visitedAt DateTime @default(now())
+
+  @@unique([userId, osmId])
+}
