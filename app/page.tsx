@@ -180,6 +180,51 @@ async function fetchClientSideOSM(cityName: string, knownCenter?: { lat: number;
     } catch {}
   }
 
+  // Bezpośredni fallback do OpenStreetMap Nominatim w przeglądarce
+  try {
+    const urls = [
+      `https://nominatim.openstreetmap.org/search?amenity=pub&city=${encodeURIComponent(cityName)}&format=json&limit=50`,
+      `https://nominatim.openstreetmap.org/search?amenity=bar&city=${encodeURIComponent(cityName)}&format=json&limit=50`,
+      `https://nominatim.openstreetmap.org/search?q=pub+${encodeURIComponent(cityName)}&format=json&limit=40`
+    ];
+    const nResults = await Promise.allSettled(urls.map(u => fetch(u).then(r => r.json())));
+    const nBars: any[] = [];
+    const seen = new Set<string>();
+
+    nResults.forEach(r => {
+      if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+        r.value.forEach((item: any) => {
+          const bLat = parseFloat(item.lat);
+          const bLon = parseFloat(item.lon);
+          if (isNaN(bLat) || isNaN(bLon)) continue;
+
+          let name = item.name;
+          if (!name && item.display_name) {
+            name = item.display_name.split(',')[0].trim();
+          }
+          if (!name || name.toLowerCase() === cityName.toLowerCase()) return;
+
+          const key = name.toLowerCase().trim();
+          if (seen.has(key)) return;
+          seen.add(key);
+
+          nBars.push({
+            osmId: `osm/${item.osm_type || 'node'}/${item.osm_id || Math.random().toString(36).substring(2, 8)}`,
+            name,
+            type: item.display_name?.toLowerCase().includes('pub') ? 'Pub' : 'Bar',
+            address: item.display_name ? item.display_name.split(',').slice(1, 3).join(', ').trim() : `${cityName}, Centrum`,
+            lat: bLat,
+            lon: bLon
+          });
+        });
+      }
+    });
+
+    if (nBars.length > 0) {
+      return { center: { lat, lon }, bars: nBars };
+    }
+  } catch {}
+
   return { center: { lat, lon }, bars: [] };
 }
 

@@ -12,11 +12,7 @@ export interface BarItem {
   website?: string | null;
 }
 
-// Lokalny cache w pamięci procesu dla szybkości
-const cache = new Map<string, { timestamp: number; data: { center: { lat: number; lon: number }; bars: BarItem[] } }>();
-const CACHE_TTL_MS = 1000 * 60 * 30; // 30 minut
-
-// Znane współrzędne głównych miast do natychmiastowego startu bez opóźnienia geokodera
+// Znane współrzędne głównych miast do natychmiastowego centrowania mapy
 const KNOWN_COORDS: Record<string, { lat: number; lon: number }> = {
   "rzeszów": { lat: 50.0412, lon: 21.9991 },
   "rzeszow": { lat: 50.0412, lon: 21.9991 },
@@ -36,19 +32,14 @@ const KNOWN_COORDS: Record<string, { lat: number; lon: number }> = {
   "szczecin": { lat: 53.4285, lon: 14.5528 }
 };
 
-// Lista publicznych serwerów Overpass API do odpytywania
-const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter'
-];
+// Pamięć podręczna na 30 minut
+const cache = new Map<string, { timestamp: number; data: { center: { lat: number; lon: number }; bars: BarItem[] } }>();
+const CACHE_TTL_MS = 1000 * 60 * 30;
 
 export async function fetchBarsFromOSM(cityName: string, coordsOverride?: { lat: number; lon: number }) {
   const normalizedCity = cityName.trim();
   const cacheKey = normalizedCity.toLowerCase();
 
-  // Sprawdź cache
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS && cached.data.bars.length > 0) {
     return cached.data;
@@ -57,156 +48,122 @@ export async function fetchBarsFromOSM(cityName: string, coordsOverride?: { lat:
   let lat = coordsOverride?.lat;
   let lon = coordsOverride?.lon;
 
-  // 1. Sprawdź znane koordynaty lub odpytaj Nominatim
+  const known = KNOWN_COORDS[cacheKey];
   if (!lat || !lon) {
-    const known = KNOWN_COORDS[cacheKey];
     if (known) {
       lat = known.lat;
       lon = known.lon;
-    } else {
-      try {
-        const geoRes = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(normalizedCity)}&countrycodes=pl&limit=1`,
-          {
-            headers: {
-              'User-Agent': 'BarPulse-OSM-Radar/2.0 (web-app: contact@barpulse.pl)',
-              'Accept-Language': 'pl,en'
-            },
-            signal: AbortSignal.timeout(6000)
-          }
-        );
-
-        if (geoRes.ok) {
-          const geoData = await geoRes.json();
-          if (geoData && geoData.length > 0) {
-            lat = parseFloat(geoData[0].lat);
-            lon = parseFloat(geoData[0].lon);
-          }
-        }
-      } catch {
-        // Fallback do Rzeszowa jeśli geokodowanie zawiodło
-      }
     }
   }
 
-  if (!lat || !lon) {
-    lat = 50.0412;
-    lon = 21.9991;
-  }
+  const userAgent = 'BarPulse-Radar-App/2.5 (OpenStreetMap student project; contact: info@barpulse.pl)';
 
-  // 2. Zapytanie do Overpass API po WSZYSTKIE lokale w promieniu 12 km
-  const overpassQuery = `
-    [out:json][timeout:25];
-    (
-      node["amenity"~"^(bar|pub|nightclub|biergarten)$"](around:12000,${lat},${lon});
-      node["brewery"](around:12000,${lat},${lon});
-      node["craft"="brewery"](around:12000,${lat},${lon});
-      way["amenity"~"^(bar|pub|nightclub|biergarten)$"](around:12000,${lat},${lon});
-      way["brewery"](around:12000,${lat},${lon});
-    );
-    out center;
-  `;
+  // Zapytania do oficjalnego API OpenStreetMap Nominatim w celu pobrania realnych lokali
+  const queries = [
+    `https://nominatim.openstreetmap.org/search?amenity=pub&city=${encodeURIComponent(normalizedCity)}&format=json&limit=50`,
+    `https://nominatim.openstreetmap.org/search?amenity=bar&city=${encodeURIComponent(normalizedCity)}&format=json&limit=50`,
+    `https://nominatim.openstreetmap.org/search?amenity=nightclub&city=${encodeURIComponent(normalizedCity)}&format=json&limit=40`,
+    `https://nominatim.openstreetmap.org/search?q=pub+${encodeURIComponent(normalizedCity)}&format=json&limit=40`,
+    `https://nominatim.openstreetmap.org/search?q=bar+${encodeURIComponent(normalizedCity)}&format=json&limit=40`,
+    `https://nominatim.openstreetmap.org/search?q=klub+${encodeURIComponent(normalizedCity)}&format=json&limit=30`
+  ];
 
-  let overpassData: any = null;
-
-  // Odpytuj dostępne serwery Overpass po kolei aż któryś odpowie
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        body: overpassQuery,
+  const results = await Promise.allSettled(
+    queries.map(url =>
+      fetch(url, {
         headers: {
-          'Content-Type': 'text/plain',
-          'User-Agent': 'BarPulse-OSM-Radar/2.0'
+          'User-Agent': userAgent,
+          'Accept-Language': 'pl,en'
         },
-        signal: AbortSignal.timeout(10000)
-      });
+        signal: AbortSignal.timeout(6000)
+      }).then(r => (r.ok ? r.json() : []))
+    )
+  );
 
-      if (res.ok) {
-        const json = await res.json();
-        if (json && json.elements && json.elements.length > 0) {
-          overpassData = json;
-          break;
-        }
-      }
-    } catch {
-      // Przejdź do kolejnego serwera w pętli
+  const rawElements: any[] = [];
+  results.forEach(res => {
+    if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+      rawElements.push(...res.value);
     }
+  });
+
+  const uniqueBars: BarItem[] = [];
+  const seenNames = new Set<string>();
+
+  for (const item of rawElements) {
+    const bLat = parseFloat(item.lat);
+    const bLon = parseFloat(item.lon);
+    if (isNaN(bLat) || isNaN(bLon)) continue;
+
+    // Pobierz i sformatuj nazwę
+    let name = item.name;
+    if (!name && item.display_name) {
+      name = item.display_name.split(',')[0].trim();
+    }
+    if (!name || name.length < 2) continue;
+
+    // Filtrujemy niepożądane obiekty jeśli nazwa to tylko np. "Polska" czy nazwa miasta
+    if (name.toLowerCase() === normalizedCity.toLowerCase() || name.toLowerCase() === 'polska') {
+      continue;
+    }
+
+    const key = name.toLowerCase().trim();
+    if (seenNames.has(key)) continue;
+    seenNames.add(key);
+
+    // Kategoryzacja
+    let type = 'Bar';
+    const textToCheck = `${name} ${item.type || ''} ${item.class || ''} ${item.display_name || ''}`.toLowerCase();
+    if (textToCheck.includes('pub') || textToCheck.includes('piw') || textToCheck.includes('beer')) {
+      type = textToCheck.includes('craft') || textToCheck.includes('kraft') ? 'Craft Beer' : 'Pub';
+    } else if (textToCheck.includes('nightclub') || textToCheck.includes('klub') || textToCheck.includes('club')) {
+      type = 'Klub Muzyczny';
+    } else if (textToCheck.includes('shot') || textToCheck.includes('pijalnia') || textToCheck.includes('wódk')) {
+      type = 'Shot Bar';
+    } else if (textToCheck.includes('browar') || textToCheck.includes('brewery')) {
+      type = 'Browar';
+    }
+
+    // Adres
+    let address = `${cityName}, Centrum`;
+    if (item.display_name) {
+      const parts = item.display_name.split(',');
+      if (parts.length > 2) {
+        address = `${parts[1]?.trim() || ''} ${parts[2]?.trim() || ''}`.trim();
+      }
+    }
+
+    uniqueBars.push({
+      osmId: `osm/${item.osm_type || 'node'}/${item.osm_id || Math.random().toString(36).substring(2, 9)}`,
+      name,
+      type,
+      address,
+      lat: bLat,
+      lon: bLon
+    });
   }
 
-  if (overpassData && overpassData.elements && overpassData.elements.length > 0) {
-    const bars: BarItem[] = overpassData.elements
-      .map((el: any) => {
-        const barLat = el.lat || el.center?.lat;
-        const barLon = el.lon || el.center?.lon;
-        if (!barLat || !barLon) return null;
-
-        const amenity = el.tags?.amenity;
-        const name =
-          el.tags?.name ||
-          el.tags?.operator ||
-          el.tags?.brand ||
-          (amenity === 'pub'
-            ? 'Pub'
-            : amenity === 'nightclub'
-            ? 'Klub Muzyczny'
-            : amenity === 'biergarten'
-            ? 'Ogródek Piwny'
-            : 'Bar');
-
-        let type = 'Bar';
-        if (amenity === 'pub') type = 'Pub';
-        else if (amenity === 'nightclub') type = 'Klub Muzyczny';
-        else if (amenity === 'biergarten') type = 'Ogródek Piwny';
-        else if (el.tags?.brewery || el.tags?.craft === 'brewery') type = 'Browar';
-        else if (name.toLowerCase().includes('shot') || name.toLowerCase().includes('pijalnia') || name.toLowerCase().includes('wódk')) type = 'Shot Bar';
-        else if (name.toLowerCase().includes('craft') || name.toLowerCase().includes('kraft')) type = 'Craft Beer';
-
-        const street = el.tags?.['addr:street'];
-        const house = el.tags?.['addr:housenumber'] || '';
-        const address = street ? `${street} ${house}`.trim() : (el.tags?.['addr:place'] || el.tags?.['addr:suburb'] || `${cityName}, Centrum`);
-
-        return {
-          osmId: `${el.type}/${el.id}`,
-          name,
-          type,
-          address,
-          lat: barLat,
-          lon: barLon,
-          openingHours: el.tags?.opening_hours || null,
-          phone: el.tags?.phone || null,
-          website: el.tags?.website || null
-        };
-      })
-      .filter(Boolean) as BarItem[];
-
-    // Usuwanie duplikatów
-    const uniqueBars: BarItem[] = [];
-    const seen = new Set<string>();
-    for (const b of bars) {
-      const key = `${b.name.toLowerCase()}_${b.lat.toFixed(4)}_${b.lon.toFixed(4)}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        uniqueBars.push(b);
-      }
-    }
-
+  // Ustal centrum
+  if (!lat || !lon) {
     if (uniqueBars.length > 0) {
-      const result = {
-        center: { lat, lon },
-        bars: uniqueBars
-      };
-      cache.set(cacheKey, { timestamp: Date.now(), data: result });
-      return result;
+      lat = uniqueBars[0].lat;
+      lon = uniqueBars[0].lon;
+    } else {
+      lat = 50.0412;
+      lon = 21.9991;
     }
   }
 
-  // Jeśli serwery Overpass nie zwróciły wyników, zwróć pustą listę z prawidłowym centrum,
-  // a klient przeglądarki podejmie próbę bezpośrednią
-  return {
+  const result = {
     center: { lat, lon },
-    bars: []
+    bars: uniqueBars
   };
+
+  if (uniqueBars.length > 0) {
+    cache.set(cacheKey, { timestamp: Date.now(), data: result });
+  }
+
+  return result;
 }
 
 export async function GET(request: NextRequest) {
@@ -215,10 +172,13 @@ export async function GET(request: NextRequest) {
   const latParam = searchParams.get('lat');
   const lonParam = searchParams.get('lon');
 
-  const coordsOverride = latParam && lonParam ? {
-    lat: parseFloat(latParam),
-    lon: parseFloat(lonParam)
-  } : undefined;
+  const coordsOverride =
+    latParam && lonParam
+      ? {
+          lat: parseFloat(latParam),
+          lon: parseFloat(lonParam)
+        }
+      : undefined;
 
   try {
     const data = await fetchBarsFromOSM(city, coordsOverride);

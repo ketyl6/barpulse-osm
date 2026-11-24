@@ -206,33 +206,20 @@ export default function InteractiveMap({
 
       let iconSvg = '';
       if (isClub) {
-        iconSvg = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>`;
+        iconSvg = `<svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>`;
       } else if (isShot) {
-        iconSvg = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z"></path></svg>`;
+        iconSvg = `<svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z"></path></svg>`;
       } else {
-        iconSvg = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 100-6 3 3 0 000 6z"></path></svg>`;
+        iconSvg = `<svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 100-6 3 3 0 000 6z"></path></svg>`;
       }
 
-      const colorClasses = isVisited
-        ? 'bg-emerald-500 text-slate-950 border-emerald-300 shadow-[0_0_18px_rgba(16,185,129,0.7)]'
-        : 'bg-amber-500 text-slate-950 border-amber-300 shadow-[0_0_18px_rgba(245,158,11,0.7)]';
-
-      const pingClasses = isVisited ? 'bg-emerald-500' : 'bg-amber-500';
+      const statusClass = isVisited ? 'visited' : 'unvisited';
 
       const markerHtml = `
-        <div class="relative group cursor-pointer flex items-center justify-center -translate-x-1/2 -translate-y-1/2">
-          <!-- Pulsująca fala radaru -->
-          <span class="absolute -inset-1.5 rounded-full ${pingClasses} opacity-60 animate-ping"></span>
-          
-          <!-- Główny pin -->
-          <div class="relative w-8 h-8 rounded-full border-2 flex items-center justify-center font-black transition-transform duration-200 group-hover:scale-125 ${colorClasses}">
+        <div class="barpulse-pin-wrapper">
+          <div class="barpulse-radar-wave ${statusClass}"></div>
+          <div class="barpulse-pin ${statusClass}" title="${bar.name}">
             ${iconSvg}
-          </div>
-
-          <!-- Dymek podglądu nazwy -->
-          <div class="absolute bottom-full mb-1 px-2.5 py-1 bg-slate-950/90 backdrop-blur border border-white/10 rounded-lg text-white text-[11px] font-bold whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50">
-            ${bar.name}
-            <span class="block text-[9px] ${isVisited ? 'text-emerald-400' : 'text-amber-400'}">${bar.type}</span>
           </div>
         </div>
       `;
@@ -240,11 +227,15 @@ export default function InteractiveMap({
       const customIcon = L.divIcon({
         className: 'custom-marker-icon',
         html: markerHtml,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16]
+        iconSize: [34, 34],
+        iconAnchor: [17, 17]
       });
 
-      const marker = L.marker([bar.lat, bar.lon], { icon: customIcon });
+      const barLat = parseFloat(String(bar.lat));
+      const barLon = parseFloat(String(bar.lon));
+      if (isNaN(barLat) || isNaN(barLon)) return;
+
+      const marker = L.marker([barLat, barLon], { icon: customIcon });
 
       marker.on('click', () => {
         setSelectedBar(bar);
