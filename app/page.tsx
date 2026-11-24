@@ -63,6 +63,126 @@ const AVAILABLE_COLORS = [
   { id: 'rose', name: 'Neon Rose', border: 'border-rose-500/50', bg: 'bg-rose-500/10', text: 'text-rose-400', shadow: 'shadow-rose-500/20', from: 'from-rose-400 to-red-500' }
 ];
 
+const CLIENT_CITY_COORDS: Record<string, { lat: number; lon: number }> = {
+  "rzeszów": { lat: 50.0412, lon: 21.9991 },
+  "rzeszow": { lat: 50.0412, lon: 21.9991 },
+  "kraków": { lat: 50.0647, lon: 19.9450 },
+  "krakow": { lat: 50.0647, lon: 19.9450 },
+  "warszawa": { lat: 52.2297, lon: 21.0122 },
+  "wrocław": { lat: 51.1079, lon: 17.0385 },
+  "wroclaw": { lat: 51.1079, lon: 17.0385 },
+  "gdańsk": { lat: 54.3520, lon: 18.6466 },
+  "gdansk": { lat: 54.3520, lon: 18.6466 },
+  "poznań": { lat: 52.4064, lon: 16.9252 },
+  "poznan": { lat: 52.4064, lon: 16.9252 },
+  "katowice": { lat: 50.2649, lon: 19.0238 },
+  "lublin": { lat: 51.2465, lon: 22.5684 },
+  "łódź": { lat: 51.7592, lon: 19.4560 },
+  "lodz": { lat: 51.7592, lon: 19.4560 },
+  "szczecin": { lat: 53.4285, lon: 14.5528 }
+};
+
+async function fetchClientSideOSM(cityName: string, knownCenter?: { lat: number; lon: number }) {
+  const norm = cityName.trim().toLowerCase();
+  let lat = knownCenter?.lat || CLIENT_CITY_COORDS[norm]?.lat;
+  let lon = knownCenter?.lon || CLIENT_CITY_COORDS[norm]?.lon;
+
+  if (!lat || !lon) {
+    try {
+      const geo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cityName)}&countrycodes=pl&limit=1`);
+      const gData = await geo.json();
+      if (gData && gData.length > 0) {
+        lat = parseFloat(gData[0].lat);
+        lon = parseFloat(gData[0].lon);
+      }
+    } catch {}
+  }
+
+  if (!lat || !lon) {
+    lat = 50.0412;
+    lon = 21.9991;
+  }
+
+  const query = `
+    [out:json][timeout:25];
+    (
+      node["amenity"~"^(bar|pub|nightclub|biergarten)$"](around:12000,${lat},${lon});
+      node["brewery"](around:12000,${lat},${lon});
+      node["craft"="brewery"](around:12000,${lat},${lon});
+      way["amenity"~"^(bar|pub|nightclub|biergarten)$"](around:12000,${lat},${lon});
+      way["brewery"](around:12000,${lat},${lon});
+    );
+    out center;
+  `;
+
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+  ];
+
+  for (const ep of endpoints) {
+    try {
+      const res = await fetch(ep, {
+        method: 'POST',
+        body: query,
+        headers: { 'Content-Type': 'text/plain' },
+        signal: AbortSignal.timeout(12000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.elements && data.elements.length > 0) {
+          const rawBars = data.elements.map((el: any) => {
+            const bLat = el.lat || el.center?.lat;
+            const bLon = el.lon || el.center?.lon;
+            if (!bLat || !bLon) return null;
+
+            const amenity = el.tags?.amenity;
+            const name = el.tags?.name || el.tags?.operator || (amenity === 'pub' ? 'Pub' : amenity === 'nightclub' ? 'Klub' : 'Bar');
+            let type = 'Bar';
+            if (amenity === 'pub') type = 'Pub';
+            else if (amenity === 'nightclub') type = 'Klub Muzyczny';
+            else if (amenity === 'biergarten') type = 'Ogródek Piwny';
+            else if (el.tags?.brewery || el.tags?.craft === 'brewery') type = 'Browar';
+            else if (name.toLowerCase().includes('shot') || name.toLowerCase().includes('pijalnia')) type = 'Shot Bar';
+            else if (name.toLowerCase().includes('craft') || name.toLowerCase().includes('kraft')) type = 'Craft Beer';
+
+            const street = el.tags?.['addr:street'];
+            const house = el.tags?.['addr:housenumber'] || '';
+            const address = street ? `${street} ${house}`.trim() : (el.tags?.['addr:place'] || `${cityName}, Centrum`);
+
+            return {
+              osmId: `${el.type}/${el.id}`,
+              name,
+              type,
+              address,
+              lat: bLat,
+              lon: bLon,
+              openingHours: el.tags?.opening_hours || null
+            };
+          }).filter(Boolean);
+
+          const unique: any[] = [];
+          const seen = new Set<string>();
+          for (const b of rawBars) {
+            const key = `${b.name.toLowerCase()}_${b.lat.toFixed(4)}_${b.lon.toFixed(4)}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              unique.push(b);
+            }
+          }
+
+          if (unique.length > 0) {
+            return { center: { lat, lon }, bars: unique };
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return { center: { lat, lon }, bars: [] };
+}
+
 export default function Home() {
   const [user, setUser] = useState<any>(null);
   const [view, setView] = useState<'login' | 'register' | 'map' | 'profile' | 'team' | 'rankings'>('login');
@@ -162,9 +282,31 @@ export default function Home() {
     if (view === 'map') {
       setLoading(true);
       fetchBarsOSM(city)
-        .then(data => {
-          setMapCenter(data.center);
-          setBars(data.bars);
+        .then(async data => {
+          let loadedBars = data?.bars || [];
+          let center = data?.center;
+
+          // Jeśli zapytanie serwerowe zwróciło 0 barów (np. Vercel został zablokowany),
+          // pobierz bezpośrednio z przeglądarki z OpenStreetMap!
+          if (!loadedBars || loadedBars.length === 0) {
+            try {
+              const clientData = await fetchClientSideOSM(city, center);
+              if (clientData && clientData.bars.length > 0) {
+                loadedBars = clientData.bars;
+                center = clientData.center;
+              }
+            } catch {}
+          }
+
+          setMapCenter(center);
+          setBars(loadedBars);
+        })
+        .catch(async () => {
+          try {
+            const clientData = await fetchClientSideOSM(city);
+            setMapCenter(clientData.center);
+            setBars(clientData.bars);
+          } catch {}
         })
         .finally(() => setLoading(false));
 

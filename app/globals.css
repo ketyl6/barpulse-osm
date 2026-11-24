@@ -16,9 +16,10 @@
   height: 100% !important;
 }
 
-/* Magiczny filtr zamieniający jasną darmową mapę OSM w piękny Dark Mode */
-.dark-map-tiles {
-  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%) grayscale(20%) !important;
+/* Magiczny filtr zamieniający jasną darmową mapę OSM w piękny Dark Mode bez żadnych kluczy API */
+.dark-map-tiles,
+.leaflet-tile-pane .leaflet-tile {
+  filter: invert(100%) hue-rotate(180deg) brightness(90%) contrast(92%) grayscale(25%) !important;
 }
 
 .leaflet-control-attribution, .leaflet-control-zoom {

@@ -96,11 +96,11 @@ export default function InteractiveMap({
         attributionControl: false
       });
 
-      // Eleganckie ciemne kafelki CartoDB Dark Matter z fallbackiem do OSM
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-        subdomains: 'abcd',
-        maxZoom: 19
+      // Czyste, darmowe kafelki OpenStreetMap 100% BEZ KLUCZA API z filtrem dark mode
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19,
+        className: 'dark-map-tiles'
       }).addTo(map);
 
       const markersLayer = L.layerGroup().addTo(map);
