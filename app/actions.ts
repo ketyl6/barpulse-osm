@@ -74,8 +74,14 @@ interface MemoryVisit {
   visitedAt: Date;
 }
 
+interface MemoryStore {
+  users: Map<string, MemoryUser>;
+  teams: Map<string, MemoryTeam>;
+  visits: MemoryVisit[];
+}
+
 // Singleton dla środowiska bez aktywnej bazy PostgreSQL
-const memStore = (global as any).__barpulse_mem_store || {
+const memStore: MemoryStore = ((global as any).__barpulse_mem_store as MemoryStore) || {
   users: new Map<string, MemoryUser>(),
   teams: new Map<string, MemoryTeam>(),
   visits: [] as MemoryVisit[]
@@ -418,7 +424,7 @@ export async function leaveTeam(userId: string) {
   if (u && u.teamId) {
     const t = memStore.teams.get(u.teamId);
     if (t && t.ownerId === userId) {
-      const otherMembers = Array.from(memStore.users.values()).filter(m => m.teamId === t.id && m.id !== userId);
+      const otherMembers: MemoryUser[] = Array.from(memStore.users.values()).filter((m: MemoryUser) => m.teamId === t.id && m.id !== userId);
       if (otherMembers.length > 0) {
         t.ownerId = otherMembers[0].id;
         otherMembers[0].teamRole = 'OWNER';
@@ -601,12 +607,12 @@ export async function getTeamDetails(teamId: string): Promise<TeamDetails | null
   const t = memStore.teams.get(teamId);
   if (!t) return null;
 
-  const teamMembers = Array.from(memStore.users.values()).filter(u => u.teamId === teamId);
+  const teamMembers: MemoryUser[] = Array.from(memStore.users.values()).filter((u: MemoryUser) => u.teamId === teamId);
   const uniqueTeamBars = new Set<string>();
 
-  const members: TeamMemberItem[] = teamMembers.map(m => {
-    const visits = memStore.visits.filter((v: any) => v.userId === m.id);
-    visits.forEach((v: any) => uniqueTeamBars.add(v.osmId));
+  const members: TeamMemberItem[] = teamMembers.map((m: MemoryUser) => {
+    const visits = memStore.visits.filter((v: MemoryVisit) => v.userId === m.id);
+    visits.forEach((v: MemoryVisit) => uniqueTeamBars.add(v.osmId));
     return {
       id: m.id,
       nickname: m.nickname,
@@ -689,10 +695,10 @@ export async function getTeamVisits(teamId: string): Promise<string[]> {
     } catch {}
   }
 
-  const teamMembers = Array.from(memStore.users.values()).filter(u => u.teamId === teamId);
-  const memberIds = new Set(teamMembers.map(m => m.id));
-  const visits = memStore.visits.filter((v: any) => memberIds.has(v.userId));
-  const set = new Set<string>(visits.map((v: any) => v.osmId));
+  const teamMembers: MemoryUser[] = Array.from(memStore.users.values()).filter((u: MemoryUser) => u.teamId === teamId);
+  const memberIds = new Set<string>(teamMembers.map((m: MemoryUser) => m.id));
+  const visits = memStore.visits.filter((v: MemoryVisit) => memberIds.has(v.userId));
+  const set = new Set<string>(visits.map((v: MemoryVisit) => v.osmId));
   return Array.from(set);
 }
 
@@ -709,7 +715,7 @@ export async function getUserVisits(userId: string): Promise<string[]> {
     } catch {}
   }
 
-  return memStore.visits.filter((v: any) => v.userId === userId).map((v: any) => v.osmId);
+  return memStore.visits.filter((v: MemoryVisit) => v.userId === userId).map((v: MemoryVisit) => v.osmId);
 }
 
 // --- RANKINGI I LEADERBOARD ---
@@ -747,12 +753,12 @@ export async function getLeaderboard(region: string) {
     } catch {}
   }
 
-  const teams = Array.from(memStore.teams.values()).filter(t => t.region === region || region === 'Wszystkie');
-  const leaderboard = teams.map(t => {
-    const members = Array.from(memStore.users.values()).filter(u => u.teamId === t.id);
-    const memberIds = new Set(members.map(m => m.id));
-    const visits = memStore.visits.filter((v: any) => memberIds.has(v.userId));
-    const uniqueBars = new Set<string>(visits.map((v: any) => v.osmId));
+  const teams: MemoryTeam[] = Array.from(memStore.teams.values()).filter((t: MemoryTeam) => t.region === region || region === 'Wszystkie');
+  const leaderboard = teams.map((t: MemoryTeam) => {
+    const members: MemoryUser[] = Array.from(memStore.users.values()).filter((u: MemoryUser) => u.teamId === t.id);
+    const memberIds = new Set<string>(members.map((m: MemoryUser) => m.id));
+    const visits = memStore.visits.filter((v: MemoryVisit) => memberIds.has(v.userId));
+    const uniqueBars = new Set<string>(visits.map((v: MemoryVisit) => v.osmId));
     const score = uniqueBars.size;
     return {
       id: t.id,
