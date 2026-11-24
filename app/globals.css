@@ -1,9 +1,19 @@
 @import "tailwindcss";
 
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 .leaflet-container {
   background-color: #020617 !important;
   font-family: inherit;
   outline: none !important;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 /* Magiczny filtr zamieniający jasną darmową mapę OSM w piękny Dark Mode */

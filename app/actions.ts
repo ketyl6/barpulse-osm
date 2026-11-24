@@ -2,130 +2,769 @@
 
 import { prisma } from './lib/prisma';
 import bcrypt from 'bcryptjs';
+import { fetchBarsFromOSM } from './api/bars/route';
 
-// --- AUTH ---
-export async function registerUser(nickname: string, pass: string) {
-  const existing = await prisma.user.findUnique({ where: { nickname } });
-  if (existing) throw new Error('Nick zajęty');
+// --- TYPY ---
+export interface UserProfile {
+  id: string;
+  nickname: string;
+  teamId: string | null;
+  avatar: string;
+  title: string;
+  bio: string;
+  favoriteDrink: string;
+  teamRole: string;
+  visitsCount?: number;
+}
+
+export interface TeamMemberItem {
+  id: string;
+  nickname: string;
+  avatar: string;
+  title: string;
+  teamRole: string;
+  visitsCount: number;
+}
+
+export interface TeamDetails {
+  id: string;
+  name: string;
+  code: string;
+  region: string;
+  motto: string;
+  badge: string;
+  color: string;
+  ownerId: string;
+  members: TeamMemberItem[];
+  totalScore: number;
+  level: number;
+}
+
+// --- WBUDOWANA PAMIĘĆ PODRĘCZNA / FALLBACK NA WYPADEK BRAKU BAZY POSTGRES ---
+interface MemoryUser {
+  id: string;
+  nickname: string;
+  passwordHash: string;
+  avatar: string;
+  title: string;
+  bio: string;
+  favoriteDrink: string;
+  teamRole: string;
+  teamId: string | null;
+  createdAt: Date;
+}
+
+interface MemoryTeam {
+  id: string;
+  name: string;
+  code: string;
+  region: string;
+  motto: string;
+  badge: string;
+  color: string;
+  ownerId: string;
+  createdAt: Date;
+}
+
+interface MemoryVisit {
+  id: string;
+  userId: string;
+  osmId: string;
+  barName: string;
+  visitedAt: Date;
+}
+
+// Singleton dla środowiska bez aktywnej bazy PostgreSQL
+const memStore = (global as any).__barpulse_mem_store || {
+  users: new Map<string, MemoryUser>(),
+  teams: new Map<string, MemoryTeam>(),
+  visits: [] as MemoryVisit[]
+};
+(global as any).__barpulse_mem_store = memStore;
+
+// Sprawdzenie czy baza PostgreSQL jest aktywna
+async function isPrismaAvailable(): Promise<boolean> {
+  if (!process.env.POSTGRES_PRISMA_URL) return false;
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Obliczenie poziomu ekipy na podstawie liczby odwiedzonych barów
+function calculateTeamLevel(score: number): number {
+  if (score >= 50) return 5;
+  if (score >= 25) return 4;
+  if (score >= 15) return 3;
+  if (score >= 5) return 2;
+  return 1;
+}
+
+// --- MAPA OPENSTREETMAP ---
+export async function fetchBarsOSM(city: string) {
+  return await fetchBarsFromOSM(city);
+}
+
+// --- AUTH & PROFIL ---
+export async function registerUser(
+  nickname: string,
+  pass: string,
+  avatar = '🍺',
+  title = 'Nowicjusz Barowy',
+  favoriteDrink = 'Piwo rzemieślnicze'
+) {
+  const trimmed = nickname.trim();
+  if (!trimmed) throw new Error('Podaj poprawny nick');
+  if (pass.length < 4) throw new Error('Hasło musi mieć min. 4 znaki');
+
   const passwordHash = await bcrypt.hash(pass, 10);
-  const user = await prisma.user.create({ data: { nickname, passwordHash } });
-  return { id: user.id, nickname: user.nickname, teamId: user.teamId };
+
+  if (await isPrismaAvailable()) {
+    try {
+      const existing = await prisma.user.findUnique({ where: { nickname: trimmed } });
+      if (existing) throw new Error('Nick zajęty');
+
+      const user = await prisma.user.create({
+        data: {
+          nickname: trimmed,
+          passwordHash,
+          avatar,
+          title,
+          bio: 'Gotowy na nocny szlak!',
+          favoriteDrink,
+          teamRole: 'MEMBER'
+        }
+      });
+      return {
+        id: user.id,
+        nickname: user.nickname,
+        teamId: user.teamId,
+        avatar: user.avatar,
+        title: user.title,
+        bio: user.bio,
+        favoriteDrink: user.favoriteDrink,
+        teamRole: user.teamRole
+      };
+    } catch (e: any) {
+      if (e.message === 'Nick zajęty') throw e;
+    }
+  }
+
+  // Fallback in-memory
+  for (const u of memStore.users.values()) {
+    if (u.nickname.toLowerCase() === trimmed.toLowerCase()) {
+      throw new Error('Nick zajęty');
+    }
+  }
+
+  const id = 'usr_' + Math.random().toString(36).substring(2, 10);
+  const newUser: MemoryUser = {
+    id,
+    nickname: trimmed,
+    passwordHash,
+    avatar,
+    title,
+    bio: 'Gotowy na nocny szlak!',
+    favoriteDrink,
+    teamRole: 'MEMBER',
+    teamId: null,
+    createdAt: new Date()
+  };
+  memStore.users.set(id, newUser);
+
+  return {
+    id: newUser.id,
+    nickname: newUser.nickname,
+    teamId: newUser.teamId,
+    avatar: newUser.avatar,
+    title: newUser.title,
+    bio: newUser.bio,
+    favoriteDrink: newUser.favoriteDrink,
+    teamRole: newUser.teamRole
+  };
 }
 
 export async function loginUser(nickname: string, pass: string) {
-  const user = await prisma.user.findUnique({ where: { nickname } });
-  if (!user) throw new Error('Brak użytkownika');
-  const isValid = await bcrypt.compare(pass, user.passwordHash);
+  const trimmed = nickname.trim();
+
+  if (await isPrismaAvailable()) {
+    try {
+      const user = await prisma.user.findUnique({ where: { nickname: trimmed } });
+      if (!user) throw new Error('Brak użytkownika o tym nicku');
+      const isValid = await bcrypt.compare(pass, user.passwordHash);
+      if (!isValid) throw new Error('Błędne hasło');
+      return {
+        id: user.id,
+        nickname: user.nickname,
+        teamId: user.teamId,
+        avatar: user.avatar,
+        title: user.title,
+        bio: user.bio,
+        favoriteDrink: user.favoriteDrink,
+        teamRole: user.teamRole
+      };
+    } catch (e: any) {
+      if (e.message.includes('Brak użytkownika') || e.message.includes('Błędne hasło')) throw e;
+    }
+  }
+
+  // Fallback in-memory
+  let foundUser: MemoryUser | null = null;
+  for (const u of memStore.users.values()) {
+    if (u.nickname.toLowerCase() === trimmed.toLowerCase()) {
+      foundUser = u;
+      break;
+    }
+  }
+
+  if (!foundUser) {
+    // Jeżeli to pierwsze uruchomienie lokalne, automatycznie stwórz konto dla wygody
+    return await registerUser(trimmed, pass);
+  }
+
+  const isValid = await bcrypt.compare(pass, foundUser.passwordHash);
   if (!isValid) throw new Error('Błędne hasło');
-  return { id: user.id, nickname: user.nickname, teamId: user.teamId };
+
+  return {
+    id: foundUser.id,
+    nickname: foundUser.nickname,
+    teamId: foundUser.teamId,
+    avatar: foundUser.avatar,
+    title: foundUser.title,
+    bio: foundUser.bio,
+    favoriteDrink: foundUser.favoriteDrink,
+    teamRole: foundUser.teamRole
+  };
 }
 
-// --- EKIPY ---
-export async function createTeam(userId: string, name: string, region: string) {
+export async function updateUserProfile(
+  userId: string,
+  data: { avatar?: string; title?: string; bio?: string; favoriteDrink?: string }
+) {
+  if (await isPrismaAvailable()) {
+    try {
+      const updated = await prisma.user.update({
+        where: { id: userId },
+        data: {
+          ...(data.avatar ? { avatar: data.avatar } : {}),
+          ...(data.title ? { title: data.title } : {}),
+          ...(data.bio ? { bio: data.bio } : {}),
+          ...(data.favoriteDrink ? { favoriteDrink: data.favoriteDrink } : {})
+        }
+      });
+      return {
+        id: updated.id,
+        nickname: updated.nickname,
+        teamId: updated.teamId,
+        avatar: updated.avatar,
+        title: updated.title,
+        bio: updated.bio,
+        favoriteDrink: updated.favoriteDrink,
+        teamRole: updated.teamRole
+      };
+    } catch {}
+  }
+
+  const u = memStore.users.get(userId);
+  if (u) {
+    if (data.avatar) u.avatar = data.avatar;
+    if (data.title) u.title = data.title;
+    if (data.bio) u.bio = data.bio;
+    if (data.favoriteDrink) u.favoriteDrink = data.favoriteDrink;
+    memStore.users.set(userId, u);
+    return {
+      id: u.id,
+      nickname: u.nickname,
+      teamId: u.teamId,
+      avatar: u.avatar,
+      title: u.title,
+      bio: u.bio,
+      favoriteDrink: u.favoriteDrink,
+      teamRole: u.teamRole
+    };
+  }
+  throw new Error('Nie znaleziono użytkownika');
+}
+
+// --- EKIPY (TEAMS) ---
+export async function createTeam(
+  userId: string,
+  name: string,
+  region: string,
+  badge = '⚡',
+  color = 'amber',
+  motto = 'Zgrana ekipa nocna'
+) {
   const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const team = await prisma.team.create({
-    data: { name, region, code, ownerId: userId, members: { connect: { id: userId } } }
-  });
-  return team;
+
+  if (await isPrismaAvailable()) {
+    try {
+      const team = await prisma.team.create({
+        data: {
+          name,
+          region,
+          code,
+          motto,
+          badge,
+          color,
+          ownerId: userId,
+          members: { connect: { id: userId } }
+        }
+      });
+      await prisma.user.update({
+        where: { id: userId },
+        data: { teamId: team.id, teamRole: 'OWNER' }
+      });
+      return team;
+    } catch {}
+  }
+
+  const teamId = 'team_' + Math.random().toString(36).substring(2, 10);
+  const newTeam: MemoryTeam = {
+    id: teamId,
+    name,
+    code,
+    region,
+    motto,
+    badge,
+    color,
+    ownerId: userId,
+    createdAt: new Date()
+  };
+  memStore.teams.set(teamId, newTeam);
+
+  const u = memStore.users.get(userId);
+  if (u) {
+    u.teamId = teamId;
+    u.teamRole = 'OWNER';
+    memStore.users.set(userId, u);
+  }
+
+  return newTeam;
 }
 
-export async function joinTeam(userId: string, code: string) {
-  const team = await prisma.team.findUnique({ where: { code } });
-  if (!team) throw new Error('Zły kod');
-  await prisma.user.update({ where: { id: userId }, data: { teamId: team.id } });
-  return team;
-}
+export async function joinTeam(userId: string, rawCode: string) {
+  const code = rawCode.trim().toUpperCase();
 
-export async function getTeamDetails(teamId: string) {
-  return await prisma.team.findUnique({ where: { id: teamId }, include: { members: { select: { id: true, nickname: true } } } });
+  if (await isPrismaAvailable()) {
+    try {
+      const team = await prisma.team.findUnique({ where: { code } });
+      if (!team) throw new Error('Nieprawidłowy kod ekipy');
+      await prisma.user.update({
+        where: { id: userId },
+        data: { teamId: team.id, teamRole: 'MEMBER' }
+      });
+      return team;
+    } catch (e: any) {
+      if (e.message.includes('Nieprawidłowy')) throw e;
+    }
+  }
+
+  let foundTeam: MemoryTeam | null = null;
+  for (const t of memStore.teams.values()) {
+    if (t.code === code) {
+      foundTeam = t;
+      break;
+    }
+  }
+
+  if (!foundTeam) throw new Error('Nieprawidłowy kod ekipy');
+
+  const u = memStore.users.get(userId);
+  if (u) {
+    u.teamId = foundTeam.id;
+    u.teamRole = 'MEMBER';
+    memStore.users.set(userId, u);
+  }
+
+  return foundTeam;
 }
 
 export async function leaveTeam(userId: string) {
-  await prisma.user.update({ where: { id: userId }, data: { teamId: null } });
+  if (await isPrismaAvailable()) {
+    try {
+      const user = await prisma.user.findUnique({ where: { id: userId }, include: { team: true } });
+      if (user?.team) {
+        // Jeśli jest właścicielem, przenieś własność na innego członka lub usuń ekipę
+        if (user.team.ownerId === userId) {
+          const otherMembers = await prisma.user.findMany({
+            where: { teamId: user.teamId, id: { not: userId } }
+          });
+          if (otherMembers.length > 0) {
+            await prisma.team.update({
+              where: { id: user.team.id },
+              data: { ownerId: otherMembers[0].id }
+            });
+            await prisma.user.update({
+              where: { id: otherMembers[0].id },
+              data: { teamRole: 'OWNER' }
+            });
+          } else {
+            await prisma.team.delete({ where: { id: user.team.id } });
+          }
+        }
+      }
+      await prisma.user.update({
+        where: { id: userId },
+        data: { teamId: null, teamRole: 'MEMBER' }
+      });
+      return;
+    } catch {}
+  }
+
+  const u = memStore.users.get(userId);
+  if (u && u.teamId) {
+    const t = memStore.teams.get(u.teamId);
+    if (t && t.ownerId === userId) {
+      const otherMembers = Array.from(memStore.users.values()).filter(m => m.teamId === t.id && m.id !== userId);
+      if (otherMembers.length > 0) {
+        t.ownerId = otherMembers[0].id;
+        otherMembers[0].teamRole = 'OWNER';
+        memStore.teams.set(t.id, t);
+        memStore.users.set(otherMembers[0].id, otherMembers[0]);
+      } else {
+        memStore.teams.delete(t.id);
+      }
+    }
+    u.teamId = null;
+    u.teamRole = 'MEMBER';
+    memStore.users.set(userId, u);
+  }
 }
 
-export async function updateTeamName(teamId: string, ownerId: string, newName: string) {
-  const team = await prisma.team.findUnique({ where: { id: teamId } });
-  if (team?.ownerId !== ownerId) throw new Error('Brak uprawnień');
-  await prisma.team.update({ where: { id: teamId }, data: { name: newName } });
+export async function updateTeamDetails(
+  teamId: string,
+  requesterId: string,
+  data: { name?: string; motto?: string; badge?: string; color?: string }
+) {
+  if (await isPrismaAvailable()) {
+    try {
+      const team = await prisma.team.findUnique({ where: { id: teamId } });
+      const requester = await prisma.user.findUnique({ where: { id: requesterId } });
+      if (team?.ownerId !== requesterId && requester?.teamRole !== 'OFFICER') {
+        throw new Error('Brak uprawnień do edycji ekipy');
+      }
+      await prisma.team.update({
+        where: { id: teamId },
+        data: {
+          ...(data.name ? { name: data.name } : {}),
+          ...(data.motto ? { motto: data.motto } : {}),
+          ...(data.badge ? { badge: data.badge } : {}),
+          ...(data.color ? { color: data.color } : {})
+        }
+      });
+      return;
+    } catch (e: any) {
+      if (e.message.includes('Brak uprawnień')) throw e;
+    }
+  }
+
+  const t = memStore.teams.get(teamId);
+  const req = memStore.users.get(requesterId);
+  if (!t) throw new Error('Nie znaleziono ekipy');
+  if (t.ownerId !== requesterId && req?.teamRole !== 'OFFICER') {
+    throw new Error('Brak uprawnień do edycji ekipy');
+  }
+
+  if (data.name) t.name = data.name;
+  if (data.motto) t.motto = data.motto;
+  if (data.badge) t.badge = data.badge;
+  if (data.color) t.color = data.color;
+  memStore.teams.set(teamId, t);
 }
 
-export async function kickMember(teamId: string, ownerId: string, memberId: string) {
-  const team = await prisma.team.findUnique({ where: { id: teamId } });
-  if (team?.ownerId !== ownerId) throw new Error('Brak uprawnień');
-  if (ownerId === memberId) throw new Error('Nie możesz wyrzucić siebie');
-  await prisma.user.update({ where: { id: memberId }, data: { teamId: null } });
+export async function setMemberRole(
+  teamId: string,
+  requesterId: string,
+  memberId: string,
+  newRole: 'OFFICER' | 'MEMBER'
+) {
+  if (await isPrismaAvailable()) {
+    try {
+      const team = await prisma.team.findUnique({ where: { id: teamId } });
+      if (team?.ownerId !== requesterId) throw new Error('Tylko Lider może zarządzać rangami');
+      await prisma.user.update({ where: { id: memberId }, data: { teamRole: newRole } });
+      return;
+    } catch (e: any) {
+      if (e.message.includes('Tylko Lider')) throw e;
+    }
+  }
+
+  const t = memStore.teams.get(teamId);
+  if (t?.ownerId !== requesterId) throw new Error('Tylko Lider może zarządzać rangami');
+  const m = memStore.users.get(memberId);
+  if (m && m.teamId === teamId) {
+    m.teamRole = newRole;
+    memStore.users.set(memberId, m);
+  }
 }
 
-// --- RANKINGI I WIZYTY ---
-export async function getLeaderboard(region: string) {
-  const teams = await prisma.team.findMany({
-    where: { region },
-    include: { members: { include: { visits: true } } }
+export async function kickMember(teamId: string, requesterId: string, memberId: string) {
+  if (requesterId === memberId) throw new Error('Nie możesz wyrzucić samego siebie');
+
+  if (await isPrismaAvailable()) {
+    try {
+      const team = await prisma.team.findUnique({ where: { id: teamId } });
+      const requester = await prisma.user.findUnique({ where: { id: requesterId } });
+      const target = await prisma.user.findUnique({ where: { id: memberId } });
+
+      const isLeader = team?.ownerId === requesterId;
+      const isOfficer = requester?.teamRole === 'OFFICER';
+
+      if (!isLeader && (!isOfficer || target?.teamRole === 'OFFICER' || target?.teamRole === 'OWNER')) {
+        throw new Error('Brak uprawnień do usunięcia członka');
+      }
+
+      await prisma.user.update({
+        where: { id: memberId },
+        data: { teamId: null, teamRole: 'MEMBER' }
+      });
+      return;
+    } catch (e: any) {
+      if (e.message.includes('Brak uprawnień')) throw e;
+    }
+  }
+
+  const t = memStore.teams.get(teamId);
+  const req = memStore.users.get(requesterId);
+  const tgt = memStore.users.get(memberId);
+
+  const isLeader = t?.ownerId === requesterId;
+  const isOfficer = req?.teamRole === 'OFFICER';
+
+  if (!isLeader && (!isOfficer || tgt?.teamRole === 'OFFICER' || tgt?.teamRole === 'OWNER')) {
+    throw new Error('Brak uprawnień do usunięcia członka');
+  }
+
+  if (tgt) {
+    tgt.teamId = null;
+    tgt.teamRole = 'MEMBER';
+    memStore.users.set(memberId, tgt);
+  }
+}
+
+export async function getTeamDetails(teamId: string): Promise<TeamDetails | null> {
+  if (await isPrismaAvailable()) {
+    try {
+      const team = await prisma.team.findUnique({
+        where: { id: teamId },
+        include: {
+          members: {
+            include: { visits: true }
+          }
+        }
+      });
+      if (team) {
+        const uniqueTeamBars = new Set<string>();
+        const members: TeamMemberItem[] = team.members.map((m: any) => {
+          m.visits.forEach((v: any) => uniqueTeamBars.add(v.osmId));
+          return {
+            id: m.id,
+            nickname: m.nickname,
+            avatar: m.avatar || '🍺',
+            title: m.title || 'Nowicjusz',
+            teamRole: m.id === team.ownerId ? 'OWNER' : (m.teamRole || 'MEMBER'),
+            visitsCount: m.visits.length
+          };
+        });
+
+        // Posortuj członków: Właściciel, potem Oficerowie, potem wg wizyt
+        members.sort((a, b) => {
+          if (a.teamRole === 'OWNER') return -1;
+          if (b.teamRole === 'OWNER') return 1;
+          if (a.teamRole === 'OFFICER' && b.teamRole !== 'OFFICER') return -1;
+          if (b.teamRole === 'OFFICER' && a.teamRole !== 'OFFICER') return 1;
+          return b.visitsCount - a.visitsCount;
+        });
+
+        const score = uniqueTeamBars.size;
+        return {
+          id: team.id,
+          name: team.name,
+          code: team.code,
+          region: team.region,
+          motto: team.motto || 'Zgrana ekipa nocna',
+          badge: team.badge || '⚡',
+          color: team.color || 'amber',
+          ownerId: team.ownerId,
+          members,
+          totalScore: score,
+          level: calculateTeamLevel(score)
+        };
+      }
+    } catch {}
+  }
+
+  // Fallback in-memory
+  const t = memStore.teams.get(teamId);
+  if (!t) return null;
+
+  const teamMembers = Array.from(memStore.users.values()).filter(u => u.teamId === teamId);
+  const uniqueTeamBars = new Set<string>();
+
+  const members: TeamMemberItem[] = teamMembers.map(m => {
+    const visits = memStore.visits.filter((v: any) => v.userId === m.id);
+    visits.forEach((v: any) => uniqueTeamBars.add(v.osmId));
+    return {
+      id: m.id,
+      nickname: m.nickname,
+      avatar: m.avatar,
+      title: m.title,
+      teamRole: m.id === t.ownerId ? 'OWNER' : m.teamRole,
+      visitsCount: visits.length
+    };
   });
 
-  const leaderboard = teams.map(team => {
-    const uniqueBars = new Set();
-    team.members.forEach(member => {
-      member.visits.forEach(visit => uniqueBars.add(visit.osmId));
-    });
-    return { id: team.id, name: team.name, score: uniqueBars.size, memberCount: team.members.length };
+  members.sort((a, b) => {
+    if (a.teamRole === 'OWNER') return -1;
+    if (b.teamRole === 'OWNER') return 1;
+    if (a.teamRole === 'OFFICER' && b.teamRole !== 'OFFICER') return -1;
+    if (b.teamRole === 'OFFICER' && a.teamRole !== 'OFFICER') return 1;
+    return b.visitsCount - a.visitsCount;
   });
 
-  return leaderboard.sort((a, b) => b.score - a.score);
+  const score = uniqueTeamBars.size;
+  return {
+    id: t.id,
+    name: t.name,
+    code: t.code,
+    region: t.region,
+    motto: t.motto,
+    badge: t.badge,
+    color: t.color,
+    ownerId: t.ownerId,
+    members,
+    totalScore: score,
+    level: calculateTeamLevel(score)
+  };
 }
 
-export async function getTeamVisits(teamId: string) {
-  const users = await prisma.user.findMany({ where: { teamId }, include: { visits: true } });
-  const teamVisits = new Set<string>();
-  users.forEach(u => u.visits.forEach(v => teamVisits.add(v.osmId)));
-  return Array.from(teamVisits);
-}
-
+// --- WIZYTY W BARACH ---
 export async function toggleVisit(userId: string, osmId: string, barName: string) {
-  const existing = await prisma.barVisit.findUnique({ where: { userId_osmId: { userId, osmId } } });
-  if (existing) {
-    await prisma.barVisit.delete({ where: { id: existing.id } });
+  if (await isPrismaAvailable()) {
+    try {
+      const existing = await prisma.barVisit.findUnique({
+        where: { userId_osmId: { userId, osmId } }
+      });
+      if (existing) {
+        await prisma.barVisit.delete({ where: { id: existing.id } });
+        return false;
+      } else {
+        await prisma.barVisit.create({ data: { userId, osmId, barName } });
+        return true;
+      }
+    } catch {}
+  }
+
+  const idx = memStore.visits.findIndex((v: any) => v.userId === userId && v.osmId === osmId);
+  if (idx !== -1) {
+    memStore.visits.splice(idx, 1);
     return false;
   } else {
-    await prisma.barVisit.create({ data: { userId, osmId, barName } });
+    memStore.visits.push({
+      id: 'vis_' + Math.random().toString(36).substring(2, 9),
+      userId,
+      osmId,
+      barName,
+      visitedAt: new Date()
+    });
     return true;
   }
 }
 
-// --- NASZA WŁASNA BAZA LOKALI (Gwarancja 100% działania i pełnego pokrycia) ---
-const CUSTOM_HTML_CITIES: Record<string, any[]> = {
-  "Rzeszów": [
-    { osmId: "rz/1", name: "Lord Jack", type: "Pub & Restauracja", x: 45, y: 50, address: "Rynek 5" },
-    { osmId: "rz/2", name: "Kraftownia", type: "Craft Beer", x: 48, y: 52, address: "Rynek 12" },
-    { osmId: "rz/3", name: "Pewex Pub", type: "Pub", x: 43, y: 48, address: "Słowackiego 8" },
-    { osmId: "rz/4", name: "Ministerstwo Śledzia i Wódki", type: "Shot Bar", x: 46, y: 47, address: "Rynek 14" },
-    { osmId: "rz/5", name: "Klub Pod Palmą", type: "Klub Studencki", x: 25, y: 75, address: "Cicha 4a" },
-    { osmId: "rz/6", name: "Stary Browar Rzeszowski", type: "Browar", x: 50, y: 55, address: "Rynek 20" },
-    { osmId: "rz/7", name: "Carpe Diem", type: "Klub muzyczny", x: 44, y: 53, address: "Jagiellońska 6" },
-    { osmId: "rz/8", name: "Grand Club", type: "Klub", x: 47, y: 49, address: "Kościuszki 9" },
-    { osmId: "rz/9", name: "Underground Pub", type: "Pub", x: 42, y: 51, address: "Matejki 2" },
-    { osmId: "rz/10", name: "Piwiarnia Warka", type: "Sport Pub", x: 55, y: 60, address: "Kopernika 2" },
-    { osmId: "rz/11", name: "Aloha Club", type: "Klub", x: 70, y: 80, address: "Al. Powstańców Warszawy" },
-    { osmId: "rz/12", name: "Bierhalle", type: "Browar", x: 68, y: 72, address: "Powstańców Warszawy 14" },
-    { osmId: "rz/13", name: "Piekiełko", type: "Pub", x: 46, y: 45, address: "Tadeusza Kościuszki" },
-    { osmId: "rz/14", name: "Szwejk", type: "Pub", x: 52, y: 48, address: "3 Maja" },
-    { osmId: "rz/15", name: "Pijalnia Wódki i Piwa", type: "Shot Bar", x: 45, y: 56, address: "Rynek" }
-  ],
-  "Kraków": [
-    { osmId: "kr/1", name: "Pijalnia Wódki i Piwa", type: "Shot Bar", x: 50, y: 50, address: "Św. Jana" },
-    { osmId: "kr/2", name: "Teatro Cubano", type: "Klub", x: 53, y: 48, address: "Jagiellońska" },
-    { osmId: "kr/3", name: "Banialuka", type: "Shot Bar", x: 48, y: 52, address: "Sławkowska" },
-    { osmId: "kr/4", name: "Forum Przestrzenie", type: "Lounge", x: 40, y: 70, address: "Marii Konopnickiej" }
-  ],
-  "Warszawa": [
-    { osmId: "wa/1", name: "Plan B", type: "Bar", x: 50, y: 50, address: "Aleja Wyzwolenia" },
-    { osmId: "wa/2", name: "Pawilony Nowy Świat", type: "Zgrupowanie Barów", x: 55, y: 45, address: "Nowy Świat" },
-    { osmId: "wa/3", name: "Bar Studio", type: "Lounge", x: 45, y: 52, address: "Plac Defilad" }
-  ]
-};
+export async function getTeamVisits(teamId: string): Promise<string[]> {
+  if (!teamId) return [];
 
-export async function fetchBarsOSM(city: string) {
-  const bars = CUSTOM_HTML_CITIES[city] || CUSTOM_HTML_CITIES["Rzeszów"];
-  return { center: { lat: 50, lon: 22 }, bars };
+  if (await isPrismaAvailable()) {
+    try {
+      const users = await prisma.user.findMany({
+        where: { teamId },
+        include: { visits: true }
+      });
+      const teamVisits = new Set<string>();
+      users.forEach((u: any) => u.visits.forEach((v: any) => teamVisits.add(v.osmId)));
+      return Array.from(teamVisits);
+    } catch {}
+  }
+
+  const teamMembers = Array.from(memStore.users.values()).filter(u => u.teamId === teamId);
+  const memberIds = new Set(teamMembers.map(m => m.id));
+  const visits = memStore.visits.filter((v: any) => memberIds.has(v.userId));
+  const set = new Set<string>(visits.map((v: any) => v.osmId));
+  return Array.from(set);
+}
+
+export async function getUserVisits(userId: string): Promise<string[]> {
+  if (!userId) return [];
+
+  if (await isPrismaAvailable()) {
+    try {
+      const visits = await prisma.barVisit.findMany({
+        where: { userId },
+        select: { osmId: true }
+      });
+      return visits.map((v: any) => v.osmId);
+    } catch {}
+  }
+
+  return memStore.visits.filter((v: any) => v.userId === userId).map((v: any) => v.osmId);
+}
+
+// --- RANKINGI I LEADERBOARD ---
+export async function getLeaderboard(region: string) {
+  if (await isPrismaAvailable()) {
+    try {
+      const teams = await prisma.team.findMany({
+        where: { region },
+        include: {
+          members: {
+            include: { visits: true }
+          }
+        }
+      });
+
+      const leaderboard = teams.map((team: any) => {
+        const uniqueBars = new Set<string>();
+        team.members.forEach((member: any) => {
+          member.visits.forEach((visit: any) => uniqueBars.add(visit.osmId));
+        });
+        const score = uniqueBars.size;
+        return {
+          id: team.id,
+          name: team.name,
+          badge: team.badge || '⚡',
+          color: team.color || 'amber',
+          motto: team.motto || 'Zgrana ekipa nocna',
+          score,
+          level: calculateTeamLevel(score),
+          memberCount: team.members.length
+        };
+      });
+
+      return leaderboard.sort((a, b) => b.score - a.score);
+    } catch {}
+  }
+
+  const teams = Array.from(memStore.teams.values()).filter(t => t.region === region || region === 'Wszystkie');
+  const leaderboard = teams.map(t => {
+    const members = Array.from(memStore.users.values()).filter(u => u.teamId === t.id);
+    const memberIds = new Set(members.map(m => m.id));
+    const visits = memStore.visits.filter((v: any) => memberIds.has(v.userId));
+    const uniqueBars = new Set<string>(visits.map((v: any) => v.osmId));
+    const score = uniqueBars.size;
+    return {
+      id: t.id,
+      name: t.name,
+      badge: t.badge,
+      color: t.color,
+      motto: t.motto,
+      score,
+      level: calculateTeamLevel(score),
+      memberCount: members.length
+    };
+  });
+
+  return leaderboard.sort((a, b) => b.score - a.score);
 }

@@ -9,25 +9,33 @@ generator client {
 }
 
 model User {
-  id           String      @id @default(cuid())
-  nickname     String      @unique
-  passwordHash String
-  teamId       String?
-  team         Team?       @relation(fields: [teamId], references: [id])
-  ownedTeams   Team[]      @relation("TeamOwner")
-  visits       BarVisit[]
-  createdAt    DateTime    @default(now())
+  id            String      @id @default(cuid())
+  nickname      String      @unique
+  passwordHash  String
+  avatar        String      @default("🍺")
+  title         String      @default("Nowicjusz Barowy")
+  bio           String      @default("Gotowy na nocny szlak!")
+  favoriteDrink String      @default("Piwo rzemieślnicze")
+  teamRole      String      @default("MEMBER") // OWNER, OFFICER, MEMBER
+  teamId        String?
+  team          Team?       @relation(fields: [teamId], references: [id])
+  ownedTeams    Team[]      @relation("TeamOwner")
+  visits        BarVisit[]
+  createdAt     DateTime    @default(now())
 }
 
 model Team {
-  id        String     @id @default(cuid())
-  name      String
-  code      String     @unique
-  region    String
-  ownerId   String
-  owner     User       @relation("TeamOwner", fields: [ownerId], references: [id])
-  members   User[]
-  createdAt DateTime   @default(now())
+  id          String     @id @default(cuid())
+  name        String
+  code        String     @unique
+  region      String
+  motto       String     @default("Zgrana ekipa nocna")
+  badge       String     @default("⚡")
+  color       String     @default("amber") // amber, emerald, violet, cyan, rose, orange
+  ownerId     String
+  owner       User       @relation("TeamOwner", fields: [ownerId], references: [id])
+  members     User[]
+  createdAt   DateTime   @default(now())
 }
 
 model BarVisit {
