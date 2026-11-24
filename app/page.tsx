@@ -191,9 +191,9 @@ async function fetchClientSideOSM(cityName: string, knownCenter?: { lat: number;
     const nBars: any[] = [];
     const seen = new Set<string>();
 
-    nResults.forEach(r => {
+    for (const r of nResults) {
       if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-        r.value.forEach((item: any) => {
+        for (const item of r.value) {
           const bLat = parseFloat(item.lat);
           const bLon = parseFloat(item.lon);
           if (isNaN(bLat) || isNaN(bLon)) continue;
@@ -202,10 +202,10 @@ async function fetchClientSideOSM(cityName: string, knownCenter?: { lat: number;
           if (!name && item.display_name) {
             name = item.display_name.split(',')[0].trim();
           }
-          if (!name || name.toLowerCase() === cityName.toLowerCase()) return;
+          if (!name || name.toLowerCase() === cityName.toLowerCase()) continue;
 
           const key = name.toLowerCase().trim();
-          if (seen.has(key)) return;
+          if (seen.has(key)) continue;
           seen.add(key);
 
           nBars.push({
@@ -216,9 +216,9 @@ async function fetchClientSideOSM(cityName: string, knownCenter?: { lat: number;
             lat: bLat,
             lon: bLon
           });
-        });
+        }
       }
-    });
+    }
 
     if (nBars.length > 0) {
       return { center: { lat, lon }, bars: nBars };
