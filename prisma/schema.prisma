@@ -48,3 +48,16 @@ model BarVisit {
 
   @@unique([userId, osmId])
 }
+
+model ReportedBar {
+  id         String   @id @default(cuid())
+  osmId      String   @unique
+  name       String
+  type       String   @default("Bar")
+  address    String
+  lat        Float
+  lon        Float
+  cityName   String
+  reportedBy String?
+  createdAt  DateTime @default(now())
+}

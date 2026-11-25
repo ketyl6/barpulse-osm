@@ -26,9 +26,18 @@
   display: none !important;
 }
 
-.custom-marker-icon {
+.custom-marker-icon,
+.drag-marker-icon {
   background: transparent !important;
   border: none !important;
+}
+
+/* Wskaźnik celu / celownik dodawania baru */
+.reticle-center-pin {
+  transition: transform 0.15s ease-out;
+}
+.reticle-center-pin.dragging {
+  transform: scale(1.25) translateY(-8px);
 }
 
 /* Gwarantowany styl dla markerów i neonowych radarów Leaflet BarPulse */

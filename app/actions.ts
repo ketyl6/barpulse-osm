@@ -74,17 +74,32 @@ interface MemoryVisit {
   visitedAt: Date;
 }
 
+export interface MemoryReportedBar {
+  id: string;
+  osmId: string;
+  name: string;
+  type: string;
+  address: string;
+  lat: number;
+  lon: number;
+  cityName: string;
+  reportedBy?: string | null;
+  createdAt: Date;
+}
+
 interface MemoryStore {
   users: Map<string, MemoryUser>;
   teams: Map<string, MemoryTeam>;
   visits: MemoryVisit[];
+  reportedBars: MemoryReportedBar[];
 }
 
 // Singleton dla środowiska bez aktywnej bazy PostgreSQL
 const memStore: MemoryStore = ((global as any).__barpulse_mem_store as MemoryStore) || {
   users: new Map<string, MemoryUser>(),
   teams: new Map<string, MemoryTeam>(),
-  visits: [] as MemoryVisit[]
+  visits: [] as MemoryVisit[],
+  reportedBars: [] as MemoryReportedBar[]
 };
 (global as any).__barpulse_mem_store = memStore;
 
@@ -108,9 +123,112 @@ function calculateTeamLevel(score: number): number {
   return 1;
 }
 
+// --- ZGŁASZANIE NOWYCH BARÓW PRZEZ UŻYTKOWNIKÓW ---
+export async function reportNewBar(data: {
+  name: string;
+  type: string;
+  address: string;
+  lat: number;
+  lon: number;
+  cityName: string;
+  userId?: string;
+}) {
+  const osmId = `user_bar_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const trimmedName = data.name.trim();
+  if (!trimmedName) throw new Error('Podaj nazwę lokalu');
+
+  if (await isPrismaAvailable()) {
+    try {
+      const created = await (prisma as any).reportedBar.create({
+        data: {
+          osmId,
+          name: trimmedName,
+          type: data.type || 'Bar',
+          address: data.address.trim() || `${data.cityName}, Zgłoszony przez gracza`,
+          lat: data.lat,
+          lon: data.lon,
+          cityName: data.cityName,
+          reportedBy: data.userId || null
+        }
+      });
+      return {
+        osmId: created.osmId,
+        name: created.name,
+        type: created.type,
+        address: created.address,
+        lat: created.lat,
+        lon: created.lon
+      };
+    } catch {}
+  }
+
+  const newBar: MemoryReportedBar = {
+    id: 'rep_' + Math.random().toString(36).substring(2, 9),
+    osmId,
+    name: trimmedName,
+    type: data.type || 'Bar',
+    address: data.address.trim() || `${data.cityName}, Zgłoszony przez gracza`,
+    lat: data.lat,
+    lon: data.lon,
+    cityName: data.cityName,
+    reportedBy: data.userId || null,
+    createdAt: new Date()
+  };
+  memStore.reportedBars.push(newBar);
+
+  return {
+    osmId: newBar.osmId,
+    name: newBar.name,
+    type: newBar.type,
+    address: newBar.address,
+    lat: newBar.lat,
+    lon: newBar.lon
+  };
+}
+
+export async function getReportedBars(cityName: string) {
+  if (await isPrismaAvailable()) {
+    try {
+      const bars = await (prisma as any).reportedBar.findMany({
+        where: {
+          cityName: {
+            equals: cityName,
+            mode: 'insensitive'
+          }
+        }
+      });
+      return bars.map((b: any) => ({
+        osmId: b.osmId,
+        name: b.name,
+        type: b.type,
+        address: b.address,
+        lat: b.lat,
+        lon: b.lon
+      }));
+    } catch {}
+  }
+
+  return memStore.reportedBars
+    .filter((b: MemoryReportedBar) => b.cityName.toLowerCase() === cityName.toLowerCase())
+    .map((b: MemoryReportedBar) => ({
+      osmId: b.osmId,
+      name: b.name,
+      type: b.type,
+      address: b.address,
+      lat: b.lat,
+      lon: b.lon
+    }));
+}
+
 // --- MAPA OPENSTREETMAP ---
 export async function fetchBarsOSM(city: string) {
-  return await fetchBarsFromOSM(city);
+  const osmData = await fetchBarsFromOSM(city);
+  const userReported = await getReportedBars(city);
+
+  return {
+    center: osmData.center,
+    bars: [...userReported, ...osmData.bars]
+  };
 }
 
 // --- AUTH & PROFIL ---
